@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Assignment</string>
+    <string name="timestamp">timestamp</string>
+    <string name="location">Location</string>
+    <string name="battery_status">Battery status</string>
+    <string name="internet_is_connected">Internet : Is connected</string>
+    <string name="imei">IMEI</string>
+    <string name="upload">upload</string>
+</resources>
