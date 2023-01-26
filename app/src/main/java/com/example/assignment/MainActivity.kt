@@ -3,10 +3,8 @@ package com.example.assignment
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.location.Location
@@ -17,15 +15,11 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.telephony.TelephonyManager
 import android.util.Log
-import android.view.View
-import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.work.Data
 import androidx.work.PeriodicWorkRequest
-
 import androidx.work.WorkManager
 import com.bumptech.glide.Glide
 import com.example.assignment.databinding.ActivityMainBinding
@@ -41,14 +35,9 @@ import java.util.concurrent.TimeUnit
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
-    private lateinit var txtBatteryPercentage: TextView
-    private lateinit var batteryReceiver: BatteryReceiver
-
-
     private val REQUEST_IMAGE_CAPTURE = 1
     private val REQUEST_CAMERA_PERMISSION = 100
     private var imageUrl: Uri? = null
-
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,10 +45,10 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // startPeriodicWork()
-
-        checkInternetConnection(this, binding.tvIntConn)
-
+        startPeriodicWork()
+        getInternetConnection()
+        binding.tvTimeStamp.text = gotTimestamp()
+        getBatteryStatus()
         takePicture(this)
 
         val location = findCurrentLocation()
@@ -73,108 +62,37 @@ class MainActivity : AppCompatActivity() {
             binding.tvLocation.text = "Could not find location"
         }
 
-        val timestamp = getTimestamp()
-
-        binding.tvTimeStamp.text = timestamp
-
-
-        // Check for the READ_PHONE_STATE permission
         if (ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.READ_PHONE_STATE
+                this, Manifest.permission.READ_PHONE_STATE
             ) != PackageManager.PERMISSION_GRANTED
         ) {
-            // Request the permission
             ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.READ_PHONE_STATE),
-                0
+                this, arrayOf(Manifest.permission.READ_PHONE_STATE), 0
             )
         } else {
-            displayIMEI()
+            getIMEI()
         }
-        txtBatteryPercentage = findViewById(R.id.tvBatStat)
-
-        batteryReceiver = BatteryReceiver(txtBatteryPercentage)
-
-        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
 
         binding.btnUpload.setOnClickListener {
-            //uploadimage(imageUrl!!)
-
-            imageUrl?.let { it1 -> uploadImage(it1) }
             updateData(imageUrl)
         }
-
-    }
-
-    override fun onStop() {
-        super.onStop()
-        unregisterReceiver(batteryReceiver)
     }
 
     override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            displayIMEI()
-
+            getIMEI()
         }
     }
-
-    private fun displayIMEI() {
-        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        val imei = telephonyManager.deviceId
-        if (imei != null)
-            binding.tvIMEI.text = imei
-        else
-            Toast.makeText(this, "Imei not available", Toast.LENGTH_SHORT).show()
-    }
-
-
-    fun checkInternetConnection(context: Context, layout: View) {
-        val connectivityManager =
-            context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val networkInfo = connectivityManager.activeNetworkInfo
-        if (networkInfo != null && networkInfo.isConnected) {
-            binding.tvIntConn.text = networkInfo.toString()
-        } else {
-            Toast.makeText(this, "Not connected", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    class BatteryReceiver(private val textView: TextView) : BroadcastReceiver() {
-        @SuppressLint("SetTextI18n")
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == Intent.ACTION_BATTERY_CHANGED) {
-                val level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                val scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1)
-                val batteryPct = level / scale.toFloat()
-                val status = intent.getIntExtra(BatteryManager.EXTRA_STATUS, -1)
-                val isCharging =
-                    status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
-                var chargingStatus = ""
-                if (isCharging) chargingStatus = "Charging" else chargingStatus = "Not Charging"
-                textView.text =
-                    "Battery Percentage: ${(batteryPct * 100).toInt()}%  Charging status: ${chargingStatus}"
-            }
-        }
-    }
-
-
     private val locationClient: FusedLocationProviderClient by lazy {
         LocationServices.getFusedLocationProviderClient(this)
     }
-
-
     private fun findCurrentLocation(): Location? {
         var location: Location? = null
         if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                this, Manifest.permission.ACCESS_FINE_LOCATION
             ) == PackageManager.PERMISSION_GRANTED
         ) {
             locationClient.lastLocation.addOnSuccessListener { loc: Location? ->
@@ -184,44 +102,29 @@ class MainActivity : AppCompatActivity() {
         return location
     }
 
-    @SuppressLint("SimpleDateFormat")
-    fun getTimestamp(): String {
-        val currentDate = Date()
-        val format = SimpleDateFormat("yyyyMMddHHmmss")
-        return format.format(currentDate)
-    }
-
-    fun takePicture(activity: Activity) {
+    private fun takePicture(activity: Activity) {
         val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
         activity.startActivityForResult(intent, REQUEST_IMAGE_CAPTURE)
 
         if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.CAMERA
+                this, Manifest.permission.CAMERA
             ) != PackageManager.PERMISSION_GRANTED
         ) {
             ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.CAMERA),
-                REQUEST_CAMERA_PERMISSION
+                this, arrayOf(Manifest.permission.CAMERA), REQUEST_CAMERA_PERMISSION
             )
         }
-
     }
-
-
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == Activity.RESULT_OK) {
             val imageBitmap = data?.extras?.get("data") as Bitmap
-            Glide.with(this)
-                .load(imageBitmap)
-                .into(binding.ivImage)
+            Glide.with(this).load(imageBitmap).into(binding.ivImage)
         }
     }
 
-    fun uploadImage(imageUri: Uri) {
+    private fun uploadImage(imageUri: Uri) {
         val storage = FirebaseStorage.getInstance()
         val storageRef = storage.getReference("images")
         val imageRef = storageRef.child("imageName.jpg")
@@ -235,7 +138,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    fun updateData(imageUrl: Uri?) {
+    private fun updateData(imageUrl: Uri?) {
         val imei = binding.tvIMEI.text.toString()
         val timestamp = binding.tvTimeStamp.text.toString()
         val batteryStatus = binding.tvBatStat.text.toString()
@@ -253,33 +156,57 @@ class MainActivity : AppCompatActivity() {
         val myRef = database.getReference("status")
         val newRef = myRef.push()
         newRef.setValue(data)
-
     }
+    private fun startPeriodicWork() {
+        val workManager = WorkManager.getInstance(this)
+        val data =
+            Data.Builder().putString("imei", getIMEI())
+                .putString("timestamp", gotTimestamp())
+                .putString("batteryStatus", getBatteryStatus())
+                .putString("internetConnection", getInternetConnection())
+                .build()
 
-
-//    private fun startPeriodicWork() {
-//        val workManager = WorkManager.getInstance(this)
-//        if(binding.tvIMEI.text.toString() != null && binding.tvTimeStamp.text.toString() != null && binding.tvBatStat.text.toString() != null)
-//        {
-//
-//            Log.d("tag","imei: ${binding.tvIMEI.text.toString()}")
-//            Log.d("tag","timestamp: ${binding.tvTimeStamp.text.toString()}")
-//            Log.d("tag","batteryStatus: ${binding.tvBatStat.text.toString()}")
-//
-//            val data = Data.Builder()
-//                .putString("imei", binding.tvIMEI.text.toString())
-//                .putString("timestamp", binding.tvTimeStamp.text.toString())
-//                .putString("batteryStatus", binding.tvBatStat.text.toString())
-//                .build()
-//
-//            val request = PeriodicWorkRequest.Builder(MyWorker::class.java, 15, TimeUnit.MINUTES)
-//                .setInputData(data)
-//                .build()
-//            workManager.enqueue(request)
-//        }
-//    }
-
+        val request = PeriodicWorkRequest.Builder(MyWorker::class.java, 15, TimeUnit.MINUTES)
+            .setInputData(data).build()
+        workManager.enqueue(request)
+    }
+    @SuppressLint("HardwareIds")
+    fun getIMEI(): String {
+        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val imei = telephonyManager.deviceId
+        binding.tvIMEI.text = imei
+        return imei?.toString() ?: "Unknown IMEI"
+    }
+    private fun getInternetConnection(): String {
+        val connectivityManager =
+            getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val networkInfo = connectivityManager.activeNetworkInfo
+        if (networkInfo != null && networkInfo.isConnected) {
+            binding.tvIntConn.text = networkInfo.toString()
+            return networkInfo.toString() ?: ""
+        }
+        return ""
+    }
+    @SuppressLint("SimpleDateFormat")
+    fun gotTimestamp(): String {
+        val currentDate = Date()
+        val format = SimpleDateFormat("yyyyMMddHHmm ss")
+        return format.format(currentDate)
+    }
+    @SuppressLint("SetTextI18n")
+    private fun getBatteryStatus(): String {
+        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+        val batteryPct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val isCharging = bm.isCharging
+        var chargingStatus = ""
+        if (isCharging) chargingStatus = "Charging" else chargingStatus = "Not Charging"
+        binding.tvBatStat.text = "Charging status: $chargingStatus"
+        binding.tvBatPct.text = "Battery Percentage: ${(batteryPct)}%"
+        return "Battery Percentage: ${(batteryPct).toInt()}%  Charging status: $chargingStatus"
+    }
 }
+
+
 
 
 
