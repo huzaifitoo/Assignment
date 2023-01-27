@@ -3,6 +3,7 @@ package com.example.assignment
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,12 +12,17 @@ import android.location.Location
 import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.provider.MediaStore
+import android.provider.MediaStore.MediaColumns.IS_PENDING
 import android.telephony.TelephonyManager
 import android.util.Log
+import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContentProviderCompat.requireContext
 import androidx.core.content.ContextCompat
 import androidx.work.Data
 import androidx.work.PeriodicWorkRequest
@@ -26,7 +32,10 @@ import com.example.assignment.databinding.ActivityMainBinding
 import com.google.android.gms.location.FusedLocationProviderClient
 import com.google.android.gms.location.LocationServices
 import com.google.firebase.database.FirebaseDatabase
+import com.google.firebase.installations.Utils
 import com.google.firebase.storage.FirebaseStorage
+import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
@@ -49,6 +58,7 @@ class MainActivity : AppCompatActivity() {
         getInternetConnection()
         binding.tvTimeStamp.text = gotTimestamp()
         getBatteryStatus()
+        imageUrl?.let { uploadImage(it) }
         takePicture(this)
 
         val location = findCurrentLocation()
@@ -86,9 +96,85 @@ class MainActivity : AppCompatActivity() {
             getIMEI()
         }
     }
+
     private val locationClient: FusedLocationProviderClient by lazy {
         LocationServices.getFusedLocationProviderClient(this)
     }
+
+
+    private fun updateData(imageUri: Uri?) {
+        val imei = binding.tvIMEI.text.toString()
+        val timestamp = binding.tvTimeStamp.text.toString()
+        val batteryStatus = binding.tvBatStat.text.toString()
+        val internetStatus = binding.tvIntConn.text.toString()
+        val imageUrl = imageUri
+
+        val data = HashMap<String, String>()
+        data["imei"] = imei
+        data["timestamp"] = timestamp
+        data["batteryStatus"] = batteryStatus
+        data["internetStatus"] = internetStatus
+        data["imageUrl"] = imageUrl.toString()
+
+        val database = FirebaseDatabase.getInstance()
+        val myRef = database.getReference("status")
+        val newRef = myRef.push()
+        newRef.setValue(data)
+    }
+
+    private fun startPeriodicWork() {
+        val workManager = WorkManager.getInstance(this)
+        val data =
+            Data.Builder().putString("imei", getIMEI()).putString("timestamp", gotTimestamp())
+                .putString("batteryStatus", getBatteryStatus())
+                .putString("internetConnection", getInternetConnection())
+                .putString("image", imageUrl?.let { uploadImage(it) }.toString())
+
+                .build()
+
+        val request = PeriodicWorkRequest.Builder(MyWorker::class.java, 15, TimeUnit.MINUTES)
+            .setInputData(data).build()
+        workManager.enqueue(request)
+    }
+
+    @SuppressLint("HardwareIds")
+    fun getIMEI(): String {
+        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
+        val imei = telephonyManager.deviceId
+        binding.tvIMEI.text = imei
+        return imei?.toString() ?: "Unknown IMEI"
+    }
+
+    private fun getInternetConnection(): String {
+        val connectivityManager =
+            getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val networkInfo = connectivityManager.activeNetworkInfo
+        if (networkInfo != null && networkInfo.isConnected) {
+            binding.tvIntConn.text = networkInfo.toString()
+            return networkInfo.toString() ?: ""
+        }
+        return ""
+    }
+
+    @SuppressLint("SimpleDateFormat")
+    fun gotTimestamp(): String {
+        val currentDate = Date()
+        val format = SimpleDateFormat("yyyyMMddHHmm ss")
+        return format.format(currentDate)
+    }
+
+    @SuppressLint("SetTextI18n")
+    private fun getBatteryStatus(): String {
+        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+        val batteryPct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val isCharging = bm.isCharging
+        var chargingStatus = ""
+        if (isCharging) chargingStatus = "Charging" else chargingStatus = "Not Charging"
+        binding.tvBatStat.text = "Charging status: $chargingStatus"
+        binding.tvBatPct.text = "Battery Percentage: ${(batteryPct)}%"
+        return "Battery Percentage: ${(batteryPct).toInt()}%  Charging status: $chargingStatus"
+    }
+
     private fun findCurrentLocation(): Location? {
         var location: Location? = null
         if (ContextCompat.checkSelfPermission(
@@ -115,14 +201,32 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
+
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == Activity.RESULT_OK) {
+
+            val tempUri: Uri =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) getImageUriInQ(
+                    data?.extras!!.get(
+                        "data"
+                    ) as Bitmap
+                )
+                else getImageUriInLegacy(
+                    this, data?.extras!!.get("data") as Bitmap
+                )
+            val uri: Uri = tempUri
+            imageUrl = uri
+            imageUrl?.let {
+                uploadImage(uri)
+            }
             val imageBitmap = data?.extras?.get("data") as Bitmap
             Glide.with(this).load(imageBitmap).into(binding.ivImage)
+
         }
     }
+
 
     private fun uploadImage(imageUri: Uri) {
         val storage = FirebaseStorage.getInstance()
@@ -132,77 +236,54 @@ class MainActivity : AppCompatActivity() {
 
         uploadTask.addOnSuccessListener {
             imageRef.downloadUrl.addOnSuccessListener {
-                val imageUrl = it.toString()
-                updateData(imageUri)
+                val imageUri = it
+                imageUrl?.let { updateData(imageUri) }
             }
         }
     }
 
-    private fun updateData(imageUrl: Uri?) {
-        val imei = binding.tvIMEI.text.toString()
-        val timestamp = binding.tvTimeStamp.text.toString()
-        val batteryStatus = binding.tvBatStat.text.toString()
-        val internetStatus = binding.tvIntConn.text.toString()
-        val imageUrl = binding.ivImage
-
-        val data = HashMap<String, String>()
-        data["imei"] = imei
-        data["timestamp"] = timestamp
-        data["batteryStatus"] = batteryStatus
-        data["internetStatus"] = internetStatus
-        data["imageUrl"] = imageUrl.toString()
-
-        val database = FirebaseDatabase.getInstance()
-        val myRef = database.getReference("status")
-        val newRef = myRef.push()
-        newRef.setValue(data)
+    private fun getImageUriInLegacy(inContext: Context, inImage: Bitmap): Uri {
+        val bytes = ByteArrayOutputStream()
+        inImage.compress(Bitmap.CompressFormat.JPEG, 100, bytes)
+        val path: String = MediaStore.Images.Media.insertImage(
+            inContext.contentResolver, inImage,
+            "Title", null
+        )
+        return Uri.parse(path)
     }
-    private fun startPeriodicWork() {
-        val workManager = WorkManager.getInstance(this)
-        val data =
-            Data.Builder().putString("imei", getIMEI())
-                .putString("timestamp", gotTimestamp())
-                .putString("batteryStatus", getBatteryStatus())
-                .putString("internetConnection", getInternetConnection())
-                .build()
 
-        val request = PeriodicWorkRequest.Builder(MyWorker::class.java, 15, TimeUnit.MINUTES)
-            .setInputData(data).build()
-        workManager.enqueue(request)
-    }
-    @SuppressLint("HardwareIds")
-    fun getIMEI(): String {
-        val telephonyManager = getSystemService(Context.TELEPHONY_SERVICE) as TelephonyManager
-        val imei = telephonyManager.deviceId
-        binding.tvIMEI.text = imei
-        return imei?.toString() ?: "Unknown IMEI"
-    }
-    private fun getInternetConnection(): String {
-        val connectivityManager =
-            getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val networkInfo = connectivityManager.activeNetworkInfo
-        if (networkInfo != null && networkInfo.isConnected) {
-            binding.tvIntConn.text = networkInfo.toString()
-            return networkInfo.toString() ?: ""
+    @RequiresApi(Build.VERSION_CODES.Q)
+    private fun getImageUriInQ(bitmap: Bitmap): Uri {
+        val filename = "IMG_${System.currentTimeMillis()}.jpg"
+        var fos: OutputStream?
+        var imageUri: Uri?
+        val contentValues = ContentValues().apply {
+            put(
+                MediaStore.MediaColumns.DISPLAY_NAME,
+                filename
+            )
+            put(MediaStore.MediaColumns.MIME_TYPE, "image/jpg")
+            put(
+                MediaStore.MediaColumns.RELATIVE_PATH,
+                Environment.DIRECTORY_PICTURES
+            )
+            put(IS_PENDING, 1)
         }
-        return ""
-    }
-    @SuppressLint("SimpleDateFormat")
-    fun gotTimestamp(): String {
-        val currentDate = Date()
-        val format = SimpleDateFormat("yyyyMMddHHmm ss")
-        return format.format(currentDate)
-    }
-    @SuppressLint("SetTextI18n")
-    private fun getBatteryStatus(): String {
-        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-        val batteryPct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val isCharging = bm.isCharging
-        var chargingStatus = ""
-        if (isCharging) chargingStatus = "Charging" else chargingStatus = "Not Charging"
-        binding.tvBatStat.text = "Charging status: $chargingStatus"
-        binding.tvBatPct.text = "Battery Percentage: ${(batteryPct)}%"
-        return "Battery Percentage: ${(batteryPct).toInt()}%  Charging status: $chargingStatus"
+        val contentResolver = this.contentResolver
+        contentResolver.also { resolver ->
+            imageUri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+            fos = imageUri?.let { resolver.openOutputStream(it) }
+        }
+        fos?.use { bitmap.compress(Bitmap.CompressFormat.JPEG, 100, it) }
+        fos?.flush()
+        fos ?. close ()
+        contentValues.clear()
+        contentValues.put(
+            MediaStore.Video.Media.IS_PENDING,
+            0
+        )
+        imageUri ?. let { contentResolver.update(it, contentValues, null, null) }
+        return imageUri!!
     }
 }
 
